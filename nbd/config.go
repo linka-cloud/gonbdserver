@@ -393,7 +393,7 @@ func RunConfig(control *Control) {
 		defer configCancelFunc()
 		c, err := ParseConfig()
 		if err != nil {
-			logger.Println("[ERROR] Cannot parse configuration file: %v", err)
+			logger.Printf("[ERROR] Cannot parse configuration file: %v", err)
 			return false
 		}
 		if nlogger, nlogCloser, err := c.GetLogger(); err == nil {
@@ -403,7 +403,7 @@ func RunConfig(control *Control) {
 			logger = nlogger
 			logCloser = nlogCloser
 		} else {
-			logger.Println("[ERROR] Could not load logger: %v", err)
+			logger.Printf("[ERROR] Could not load logger: %v", err)
 		}
 		logger.Printf("[INFO] Loaded configuration. Available backends: %s.", strings.Join(GetBackendNames(), ", "))
 		for _, s := range c.Servers {
