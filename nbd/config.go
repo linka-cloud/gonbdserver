@@ -257,23 +257,23 @@ func (s *SyslogWriter) Write(p []byte) (n int, err error) {
 
 // ParseConfig parses the YAML configuration provided
 func ParseConfig() (*Config, error) {
-	if buf, err := ioutil.ReadFile(*configFile); err != nil {
+	buf, err := ioutil.ReadFile(*configFile)
+	if err != nil {
 		return nil, err
-	} else {
-		c := &Config{}
-		if err := yaml.Unmarshal(buf, c); err != nil {
-			return nil, err
-		}
-		for i, _ := range c.Servers {
-			if c.Servers[i].Protocol == "" {
-				c.Servers[i].Protocol = "tcp"
-			}
-			if c.Servers[i].Protocol == "tcp" && c.Servers[i].Address == "" {
-				c.Servers[i].Protocol = fmt.Sprintf("0.0.0.0:%d", NBD_DEFAULT_PORT)
-			}
-		}
-		return c, nil
 	}
+	c := &Config{}
+	if err := yaml.Unmarshal(buf, c); err != nil {
+		return nil, err
+	}
+	for i, _ := range c.Servers {
+		if c.Servers[i].Protocol == "" {
+			c.Servers[i].Protocol = "tcp"
+		}
+		if c.Servers[i].Protocol == "tcp" && c.Servers[i].Address == "" {
+			c.Servers[i].Protocol = fmt.Sprintf("0.0.0.0:%d", NBD_DEFAULT_PORT)
+		}
+	}
+	return c, nil
 }
 
 // Startserver starts a single server.
@@ -290,11 +290,12 @@ func StartServer(parentCtx context.Context, sessionParentCtx context.Context, se
 
 	logger.Printf("[INFO] Starting server %s:%s", s.Protocol, s.Address)
 
-	if l, err := NewListener(logger, s); err != nil {
+	l, err := NewListener(logger, s)
+	if err != nil {
 		logger.Printf("[ERROR] Could not create listener for %s:%s: %v", s.Protocol, s.Address, err)
-	} else {
-		l.Listen(ctx, sessionParentCtx, sessionWaitGroup)
+		return
 	}
+	l.Listen(ctx, sessionParentCtx, sessionWaitGroup)
 }
 
 func (c *Config) GetLogger() (*log.Logger, io.Closer, error) {
@@ -314,27 +315,26 @@ func (c *Config) GetLogger() (*log.Logger, io.Closer, error) {
 	if c.Logging.File != "" {
 		mode := os.FileMode(0644)
 		if c.Logging.FileMode != "" {
-			if i, err := strconv.ParseInt(c.Logging.FileMode, 8, 32); err != nil {
+			i, err := strconv.ParseInt(c.Logging.FileMode, 8, 32)
+			if err != nil {
 				return nil, nil, fmt.Errorf("Cannot read file logging mode: %v", err)
-			} else {
-				mode = os.FileMode(i)
 			}
+			mode = os.FileMode(i)
 		}
-		if file, err := os.OpenFile(c.Logging.File, os.O_CREATE|os.O_APPEND|os.O_WRONLY, mode); err != nil {
+		file, err := os.OpenFile(c.Logging.File, os.O_CREATE|os.O_APPEND|os.O_WRONLY, mode)
+		if err != nil {
 			return nil, nil, err
-		} else {
-			return log.New(file, "gonbdserver:", logFlags), file, nil
 		}
+		return log.New(file, "gonbdserver:", logFlags), file, nil
 	}
 	if c.Logging.SyslogFacility != "" {
-		if s, err := NewSyslogWriter(c.Logging.SyslogFacility); err != nil {
+		s, err := NewSyslogWriter(c.Logging.SyslogFacility)
+		if err != nil {
 			return nil, nil, err
-		} else {
-			return log.New(s, "gonbdserver:", logFlags), s, nil
 		}
-	} else {
-		return log.New(os.Stderr, "gonbdserver:", logFlags), nil, nil
+		return log.New(s, "gonbdserver:", logFlags), s, nil
 	}
+	return log.New(os.Stderr, "gonbdserver:", logFlags), nil, nil
 }
 
 // RunConfig - this is effectively the main entry point of the program
@@ -387,51 +387,56 @@ func RunConfig(control *Control) {
 		}
 	}()
 
-	for {
+	run := func() bool {
 		var wg sync.WaitGroup
 		configCtx, configCancelFunc := context.WithCancel(ctx)
-		if c, err := ParseConfig(); err != nil {
+		defer configCancelFunc()
+		c, err := ParseConfig()
+		if err != nil {
 			logger.Println("[ERROR] Cannot parse configuration file: %v", err)
-			return
-		} else {
-			if nlogger, nlogCloser, err := c.GetLogger(); err != nil {
-				logger.Println("[ERROR] Could not load logger: %v", err)
-			} else {
-				if logCloser != nil {
-					logCloser.Close()
-				}
-				logger = nlogger
-				logCloser = nlogCloser
-			}
-			logger.Printf("[INFO] Loaded configuration. Available backends: %s.", strings.Join(GetBackendNames(), ", "))
-			for _, s := range c.Servers {
-				s := s // localise loop variable
-				go func() {
-					wg.Add(1)
-					StartServer(configCtx, ctx, &sessionWaitGroup, logger, s)
-					wg.Done()
-				}()
-			}
-
-			select {
-			case <-ctx.Done():
-				logger.Println("[INFO] Interrupted")
-				return
-			case <-intr:
-				logger.Println("[INFO] Interrupt signal received")
-				return
-			case <-term:
-				logger.Println("[INFO] Terminate signal received")
-				return
-			case <-control.quit:
-				logger.Println("[INFO] Programmatic quit received")
-				return
-			case <-hup:
-				logger.Println("[INFO] Reload signal received; reloading configuration which will be effective for new connections")
-				configCancelFunc() // kill the listeners but not the sessions
-				wg.Wait()
-			}
+			return false
 		}
+		if nlogger, nlogCloser, err := c.GetLogger(); err == nil {
+			if logCloser != nil {
+				logCloser.Close()
+			}
+			logger = nlogger
+			logCloser = nlogCloser
+		} else {
+			logger.Println("[ERROR] Could not load logger: %v", err)
+		}
+		logger.Printf("[INFO] Loaded configuration. Available backends: %s.", strings.Join(GetBackendNames(), ", "))
+		for _, s := range c.Servers {
+			s := s // localise loop variable
+			go func() {
+				wg.Add(1)
+				StartServer(configCtx, ctx, &sessionWaitGroup, logger, s)
+				wg.Done()
+			}()
+		}
+
+		select {
+		case <-ctx.Done():
+			logger.Println("[INFO] Interrupted")
+			return false
+		case <-intr:
+			logger.Println("[INFO] Interrupt signal received")
+			return false
+		case <-term:
+			logger.Println("[INFO] Terminate signal received")
+			return false
+		case <-control.quit:
+			logger.Println("[INFO] Programmatic quit received")
+			return false
+		case <-hup:
+			logger.Println("[INFO] Reload signal received; reloading configuration which will be effective for new connections")
+			configCancelFunc() // kill the listeners but not the sessions
+			wg.Wait()
+		}
+		return true
+	}
+
+	for run() {
 	}
 }
 
@@ -509,10 +514,9 @@ func Run(control *Control) {
 		if p, err := d.Search(); err == nil {
 			if err := p.Signal(syscall.Signal(0)); err == nil {
 				logger.Fatalf("[CRIT] Daemon is already running (pid %d)", p.Pid)
-			} else {
-				logger.Printf("[INFO] Removing stale PID file %s", *pidFile)
-				os.Remove(*pidFile)
 			}
+			logger.Printf("[INFO] Removing stale PID file %s", *pidFile)
+			os.Remove(*pidFile)
 		}
 	}
 

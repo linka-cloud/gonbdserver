@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/base64"
-	"encoding/binary"
 	"fmt"
 	"io"
 	"os"
@@ -109,7 +108,7 @@ func (it *IntegrityTest) Reader() {
 			switch magic {
 			case NBD_REQUEST_MAGIC:
 				var cmd nbdRequest
-				if err := binary.Read(it.commands, binary.BigEndian, &cmd); err != nil {
+				if err := Read(it.commands, &cmd); err != nil {
 					if err == io.EOF {
 						return
 					}
@@ -136,7 +135,7 @@ func (it *IntegrityTest) Reader() {
 				}
 			case NBD_REPLY_MAGIC:
 				var rep nbdReply
-				if err := binary.Read(it.commands, binary.BigEndian, &rep); err != nil {
+				if err := Read(it.commands, &rep); err != nil {
 					if err == io.EOF {
 						return
 					}
@@ -209,7 +208,7 @@ func (it *IntegrityTest) Sender() {
 				it.disconnectSent = true
 			}
 			it.inflightMutex.Unlock()
-			if err := binary.Write(it.ni.conn, binary.BigEndian, cmd); err != nil {
+			if err := Write(it.ni.conn, cmd); err != nil {
 				it.Abort(fmt.Errorf("Bad write to connection: %v", err))
 				return
 			}
@@ -269,7 +268,7 @@ func (it *IntegrityTest) Receiver() {
 		}
 		var rep nbdReply
 		var data = make([]byte, 0)
-		if err := binary.Read(it.ni.conn, binary.BigEndian, &rep); err != nil {
+		if err := Read(it.ni.conn, &rep); err != nil {
 			if err == io.EOF {
 				it.inflightMutex.Lock()
 				disconnectSent := it.disconnectSent

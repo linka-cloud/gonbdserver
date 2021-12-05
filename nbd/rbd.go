@@ -1,3 +1,4 @@
+//go:build ceph
 // +build ceph
 
 // If you want to build with librados present, then use

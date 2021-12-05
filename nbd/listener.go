@@ -76,28 +76,30 @@ func (l *Listener) Listen(parentCtx context.Context, sessionParentCtx context.Co
 		default:
 		}
 		li.SetDeadline(time.Now().Add(time.Second))
-		if conn, err := li.Accept(); err != nil {
+		conn, err := li.Accept()
+		if err != nil {
 			if opErr, ok := err.(*net.OpError); ok && opErr.Timeout() {
 				continue
 			}
 			l.logger.Printf("[ERROR] Error %s listening on %s", err, addr)
-		} else {
-			l.logger.Printf("[INFO] Connect to %s from %s", addr, conn.RemoteAddr())
-			if connection, err := newConnection(l, l.logger, conn); err != nil {
-				l.logger.Printf("[ERROR] Error %s establishing connection to %s from %s", err, addr, conn.RemoteAddr())
-				conn.Close()
-			} else {
-				go func() {
-					// do not use our parent ctx as a context, as we don't want it to cancel when
-					// we reload config and cancel this listener
-					ctx, cancelFunc := context.WithCancel(sessionParentCtx)
-					defer cancelFunc()
-					sessionWaitGroup.Add(1)
-					connection.Serve(ctx)
-					sessionWaitGroup.Done()
-				}()
-			}
+			continue
 		}
+		l.logger.Printf("[INFO] Connect to %s from %s", addr, conn.RemoteAddr())
+		connection, err := newConnection(l, l.logger, conn)
+		if err != nil {
+			l.logger.Printf("[ERROR] Error %s establishing connection to %s from %s", err, addr, conn.RemoteAddr())
+			conn.Close()
+			continue
+		}
+		go func() {
+			// do not use our parent ctx as a context, as we don't want it to cancel when
+			// we reload config and cancel this listener
+			ctx, cancelFunc := context.WithCancel(sessionParentCtx)
+			defer cancelFunc()
+			sessionWaitGroup.Add(1)
+			connection.Serve(ctx)
+			sessionWaitGroup.Done()
+		}()
 	}
 
 }

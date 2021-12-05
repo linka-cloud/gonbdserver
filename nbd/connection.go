@@ -3,7 +3,6 @@ package nbd
 import (
 	"context"
 	"crypto/tls"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -82,7 +81,7 @@ type Backend interface {
 }
 
 // BackendMap is a map between backends and the generator function for them
-var BackendMap map[string]func(ctx context.Context, e *ExportConfig) (Backend, error) = make(map[string]func(ctx context.Context, e *ExportConfig) (Backend, error))
+var BackendMap = make(map[string]func(ctx context.Context, e *ExportConfig) (Backend, error))
 
 // Details of an export
 type Export struct {
@@ -171,10 +170,7 @@ func (c *Connection) GetMemory(ctx context.Context, length uint64) [][]byte {
 			}
 		default:
 			c.memBlocksFreeLWM = 0 // ensure no more are freed
-			if c.memBlocksAllocated < c.memBlocksMaximum {
-				c.memBlocksAllocated++
-				m = make([]byte, c.export.memoryBlockSize)
-			} else {
+			if c.memBlocksAllocated >= c.memBlocksMaximum {
 				c.memBlocksMutex.Unlock()
 				select {
 				case m, ok = <-c.memBlockCh:
@@ -186,6 +182,9 @@ func (c *Connection) GetMemory(ctx context.Context, length uint64) [][]byte {
 					return nil
 				}
 				c.memBlocksMutex.Lock()
+			} else {
+				c.memBlocksAllocated++
+				m = make([]byte, c.export.memoryBlockSize)
 			}
 		}
 		mem[i] = m
@@ -222,8 +221,8 @@ pushloop:
 
 // Zero memory
 func (c *Connection) ZeroMemory(ctx context.Context, mem [][]byte) {
-	for i, _ := range mem {
-		for j, _ := range mem[i] {
+	for i := range mem {
+		for j := range mem[i] {
 			mem[i][j] = 0
 		}
 	}
@@ -240,15 +239,13 @@ func (c *Connection) ReturnMemory(ctx context.Context) {
 	}()
 	for {
 		select {
-		case <-ctx.Done():
-			return
 		case <-time.After(5 * time.Second):
 			c.memBlocksMutex.Lock()
 			freeBlocks := len(c.memBlockCh)
 			if freeBlocks < c.memBlocksFreeLWM {
 				c.memBlocksFreeLWM = freeBlocks
 			}
-			//c.logger.Printf("[DEBUG] Return memory for %s alloc=%d free=%d LWM=%d", c.name, c.memBlocksAllocated, freeBlocks, c.memBlocksFreeLWM)
+			// c.logger.Printf("[DEBUG] Return memory for %s alloc=%d free=%d LWM=%d", c.name, c.memBlocksAllocated, freeBlocks, c.memBlocksFreeLWM)
 		returnloop:
 			for n := 0; n < c.memBlocksFreeLWM; n++ {
 				select {
@@ -263,6 +260,8 @@ func (c *Connection) ReturnMemory(ctx context.Context) {
 			}
 			c.memBlocksFreeLWM = freeBlocks
 			c.memBlocksMutex.Unlock()
+		case <-ctx.Done():
+			return
 		}
 	}
 }
@@ -276,7 +275,7 @@ func (c *Connection) Receive(ctx context.Context) {
 	}()
 	for {
 		req := Request{}
-		if err := binary.Read(c.conn, binary.BigEndian, &req.nbdReq); err != nil {
+		if err := Read(c.conn, &req.nbdReq); err != nil {
 			if nerr, ok := err.(net.Error); ok {
 				if nerr.Timeout() {
 					c.logger.Printf("[INFO] Client %s timeout, closing connection", c.name)
@@ -362,7 +361,6 @@ func (c *Connection) Receive(ctx context.Context) {
 				if uint64(n) != blocklen {
 					c.logger.Printf("[ERROR] Client %s cannot read all data to write: %d != %d", c.name, n, blocklen)
 					return
-
 				}
 				length -= blocklen
 			}
@@ -425,9 +423,9 @@ func (c *Connection) Dispatch(ctx context.Context, n int) {
 		c.Kill(ctx)
 		c.wg.Done()
 	}()
-	//t := time.Now()
+	// t := time.Now()
 	for {
-		//c.logger.Printf("[DEBUG] Client %s dispatcher %d waiting latency %s", c.name, n, checkpoint(&t))
+		// c.logger.Printf("[DEBUG] Client %s dispatcher %d waiting latency %s", c.name, n, checkpoint(&t))
 		select {
 		case <-ctx.Done():
 			return
@@ -435,7 +433,7 @@ func (c *Connection) Dispatch(ctx context.Context, n int) {
 			if !ok {
 				return
 			}
-			//c.logger.Printf("[DEBUG] Client %s dispatcher %d command %d latency %s", c.name, n, req.nbdReq.NbdCommandType, checkpoint(&t))
+			// c.logger.Printf("[DEBUG] Client %s dispatcher %d command %d latency %s", c.name, n, req.nbdReq.NbdCommandType, checkpoint(&t))
 			fua := req.nbdReq.NbdCommandFlags&NBD_CMD_FLAG_FUA != 0
 
 			addr := req.offset
@@ -453,7 +451,8 @@ func (c *Connection) Dispatch(ctx context.Context, n int) {
 						c.logger.Printf("[WARN] Client %s got read I/O error: %s", c.name, err)
 						req.nbdRep.NbdError = NbdError(err)
 						break
-					} else if uint64(n) != blocklen {
+					}
+					if uint64(n) != blocklen {
 						c.ZeroMemory(ctx, req.repData[i:])
 						c.logger.Printf("[WARN] Client %s got incomplete read (%d != %d) at offset %d", c.name, n, length, addr)
 						req.nbdRep.NbdError = NBD_EIO
@@ -473,7 +472,8 @@ func (c *Connection) Dispatch(ctx context.Context, n int) {
 						c.logger.Printf("[WARN] Client %s got write I/O error: %s", c.name, err)
 						req.nbdRep.NbdError = NbdError(err)
 						break
-					} else if uint64(n) != blocklen {
+					}
+					if uint64(n) != blocklen {
 						c.logger.Printf("[WARN] Client %s got incomplete write (%d != %d) at offset %d", c.name, n, length, addr)
 						req.nbdRep.NbdError = NBD_EIO
 						break
@@ -499,7 +499,8 @@ func (c *Connection) Dispatch(ctx context.Context, n int) {
 						c.logger.Printf("[WARN] Client %s got trim I/O error: %s", c.name, err)
 						req.nbdRep.NbdError = NbdError(err)
 						break
-					} else if uint64(n) != blocklen {
+					}
+					if uint64(n) != blocklen {
 						c.ZeroMemory(ctx, req.repData[i:])
 						c.logger.Printf("[WARN] Client %s got incomplete trim (%d != %d) at offset %d", c.name, n, length, addr)
 						req.nbdRep.NbdError = NBD_EIO
@@ -566,7 +567,7 @@ func (c *Connection) Transmit(ctx context.Context) {
 			if !ok {
 				return
 			}
-			if err := binary.Write(c.conn, binary.BigEndian, req.nbdRep); err != nil {
+			if err := Write(c.conn, req.nbdRep); err != nil {
 				c.logger.Printf("[ERROR] Client %s cannot write reply", c.name)
 				return
 			}
@@ -710,14 +711,14 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 		nsh.NbdGlobalFlags |= NBD_FLAG_NO_ZEROES
 	}
 
-	if err := binary.Write(c.conn, binary.BigEndian, nsh); err != nil {
+	if err := Write(c.conn, nsh); err != nil {
 		return errors.New("Cannot write magic header")
 	}
 
 	// next they send client flags
 	var clf nbdClientFlags
 
-	if err := binary.Read(c.conn, binary.BigEndian, &clf); err != nil {
+	if err := Read(c.conn, &clf); err != nil {
 		return errors.New("Cannot read client flags")
 	}
 
@@ -725,7 +726,7 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 	// now we get options
 	for !done {
 		var opt nbdClientOpt
-		if err := binary.Read(c.conn, binary.BigEndian, &opt); err != nil {
+		if err := Read(c.conn, &opt); err != nil {
 			return errors.New("Cannot read option (perhaps client dropped the connection)")
 		}
 		if opt.NbdOptMagic != NBD_OPTS_MAGIC {
@@ -740,18 +741,9 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 
 			clientSupportsBlockSizeConstraints := false
 
-			if opt.NbdOptId == NBD_OPT_EXPORT_NAME {
-				name = make([]byte, opt.NbdOptLen)
-				n, err := io.ReadFull(c.conn, name)
-				if err != nil {
-					return err
-				}
-				if uint32(n) != opt.NbdOptLen {
-					return errors.New("Incomplete name")
-				}
-			} else {
+			if opt.NbdOptId != NBD_OPT_EXPORT_NAME {
 				var nameLength uint32
-				if err := binary.Read(c.conn, binary.BigEndian, &nameLength); err != nil {
+				if err := Read(c.conn, &nameLength); err != nil {
 					return errors.New("Bad export name length")
 				}
 				if nameLength > 4096 {
@@ -766,12 +758,12 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 					return errors.New("Incomplete name")
 				}
 				var numInfoElements uint16
-				if err := binary.Read(c.conn, binary.BigEndian, &numInfoElements); err != nil {
+				if err := Read(c.conn, &numInfoElements); err != nil {
 					return errors.New("Bad number of info elements")
 				}
 				for i := uint16(0); i < numInfoElements; i++ {
 					var infoElement uint16
-					if err := binary.Read(c.conn, binary.BigEndian, &infoElement); err != nil {
+					if err := Read(c.conn, &infoElement); err != nil {
 						return errors.New("Bad number of info elements")
 					}
 					switch infoElement {
@@ -780,12 +772,22 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 					}
 				}
 				l := 2 + 2*uint32(numInfoElements) + 4 + uint32(nameLength)
+				if opt.NbdOptLen < l {
+					return errors.New("Option length too short")
+				}
 				if opt.NbdOptLen > l {
 					if err := skip(c.conn, opt.NbdOptLen-l); err != nil {
 						return err
 					}
-				} else if opt.NbdOptLen < l {
-					return errors.New("Option length too short")
+				}
+			} else {
+				name = make([]byte, opt.NbdOptLen)
+				n, err := io.ReadFull(c.conn, name)
+				if err != nil {
+					return err
+				}
+				if uint32(n) != opt.NbdOptLen {
+					return errors.New("Incomplete name")
 				}
 			}
 
@@ -812,7 +814,7 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 				if err == nil {
 					or.NbdOptReplyType = NBD_REP_ERR_TLS_REQD
 				}
-				if err := binary.Write(c.conn, binary.BigEndian, or); err != nil {
+				if err := Write(c.conn, or); err != nil {
 					return errors.New("Cannot send info error")
 				}
 				break
@@ -833,7 +835,7 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 					NbdOptReplyType:   NBD_REP_ERR_UNKNOWN,
 					NbdOptReplyLength: 0,
 				}
-				if err := binary.Write(c.conn, binary.BigEndian, or); err != nil {
+				if err := Write(c.conn, or); err != nil {
 					return errors.New("Cannot send info error")
 				}
 				break
@@ -843,16 +845,7 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 			name = []byte(export.name)
 			description := []byte(export.description)
 
-			if opt.NbdOptId == NBD_OPT_EXPORT_NAME {
-				// this option has a unique reply format
-				ed := nbdExportDetails{
-					NbdExportSize:  export.size,
-					NbdExportFlags: export.exportFlags,
-				}
-				if err := binary.Write(c.conn, binary.BigEndian, ed); err != nil {
-					return errors.New("Cannot write export details")
-				}
-			} else {
+			if opt.NbdOptId != NBD_OPT_EXPORT_NAME {
 				// Send NBD_INFO_EXPORT
 				or := nbdOptReply{
 					NbdOptReplyMagic:  NBD_REP_MAGIC,
@@ -860,7 +853,7 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 					NbdOptReplyType:   NBD_REP_INFO,
 					NbdOptReplyLength: 12,
 				}
-				if err := binary.Write(c.conn, binary.BigEndian, or); err != nil {
+				if err := Write(c.conn, or); err != nil {
 					return errors.New("Cannot write info export pt1")
 				}
 				ir := nbdInfoExport{
@@ -868,7 +861,7 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 					NbdExportSize:        export.size,
 					NbdTransmissionFlags: export.exportFlags,
 				}
-				if err := binary.Write(c.conn, binary.BigEndian, ir); err != nil {
+				if err := Write(c.conn, ir); err != nil {
 					return errors.New("Cannot write info export pt2")
 				}
 
@@ -879,13 +872,13 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 					NbdOptReplyType:   NBD_REP_INFO,
 					NbdOptReplyLength: uint32(2 + len(name)),
 				}
-				if err := binary.Write(c.conn, binary.BigEndian, or); err != nil {
+				if err := Write(c.conn, or); err != nil {
 					return errors.New("Cannot write info name pt1")
 				}
-				if err := binary.Write(c.conn, binary.BigEndian, uint16(NBD_INFO_NAME)); err != nil {
+				if err := Write(c.conn, uint16(NBD_INFO_NAME)); err != nil {
 					return errors.New("Cannot write name id")
 				}
-				if err := binary.Write(c.conn, binary.BigEndian, name); err != nil {
+				if err := Write(c.conn, name); err != nil {
 					return errors.New("Cannot write name")
 				}
 
@@ -896,13 +889,13 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 					NbdOptReplyType:   NBD_REP_INFO,
 					NbdOptReplyLength: uint32(2 + len(description)),
 				}
-				if err := binary.Write(c.conn, binary.BigEndian, or); err != nil {
+				if err := Write(c.conn, or); err != nil {
 					return errors.New("Cannot write info description pt1")
 				}
-				if err := binary.Write(c.conn, binary.BigEndian, uint16(NBD_INFO_DESCRIPTION)); err != nil {
+				if err := Write(c.conn, uint16(NBD_INFO_DESCRIPTION)); err != nil {
 					return errors.New("Cannot write description id")
 				}
-				if err := binary.Write(c.conn, binary.BigEndian, description); err != nil {
+				if err := Write(c.conn, description); err != nil {
 					return errors.New("Cannot write description")
 				}
 
@@ -913,7 +906,7 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 					NbdOptReplyType:   NBD_REP_INFO,
 					NbdOptReplyLength: 14,
 				}
-				if err := binary.Write(c.conn, binary.BigEndian, or); err != nil {
+				if err := Write(c.conn, or); err != nil {
 					return errors.New("Cannot write info block size pt1")
 				}
 				ir2 := nbdInfoBlockSize{
@@ -922,7 +915,7 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 					NbdPreferredBlockSize: uint32(export.preferredBlockSize),
 					NbdMaximumBlockSize:   uint32(export.maximumBlockSize),
 				}
-				if err := binary.Write(c.conn, binary.BigEndian, ir2); err != nil {
+				if err := Write(c.conn, ir2); err != nil {
 					return errors.New("Cannot write info block size pt2")
 				}
 
@@ -939,7 +932,7 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 					NbdOptReplyType:   replyType,
 					NbdOptReplyLength: 0,
 				}
-				if err := binary.Write(c.conn, binary.BigEndian, or); err != nil {
+				if err := Write(c.conn, or); err != nil {
 					return errors.New("Cannot info ack")
 				}
 				if opt.NbdOptId == NBD_OPT_INFO || or.NbdOptReplyType&NBD_REP_FLAG_ERROR != 0 {
@@ -948,12 +941,21 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 					c.backend = nil
 					break
 				}
+			} else {
+				// this option has a unique reply format
+				ed := nbdExportDetails{
+					NbdExportSize:  export.size,
+					NbdExportFlags: export.exportFlags,
+				}
+				if err := Write(c.conn, ed); err != nil {
+					return errors.New("Cannot write export details")
+				}
 			}
 
 			if clf.NbdClientFlags&NBD_FLAG_C_NO_ZEROES == 0 && opt.NbdOptId == NBD_OPT_EXPORT_NAME {
 				// send 124 bytes of zeroes.
 				zeroes := make([]byte, 124, 124)
-				if err := binary.Write(c.conn, binary.BigEndian, zeroes); err != nil {
+				if err := Write(c.conn, zeroes); err != nil {
 					return errors.New("Cannot write zeroes")
 				}
 			}
@@ -969,11 +971,11 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 					NbdOptReplyType:   NBD_REP_SERVER,
 					NbdOptReplyLength: uint32(len(name) + 4),
 				}
-				if err := binary.Write(c.conn, binary.BigEndian, or); err != nil {
+				if err := Write(c.conn, or); err != nil {
 					return errors.New("Cannot send list item")
 				}
 				l := uint32(len(name))
-				if err := binary.Write(c.conn, binary.BigEndian, l); err != nil {
+				if err := Write(c.conn, l); err != nil {
 					return errors.New("Cannot send list name length")
 				}
 				if n, err := c.conn.Write(name); err != nil || n != len(name) {
@@ -986,7 +988,7 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 				NbdOptReplyType:   NBD_REP_ACK,
 				NbdOptReplyLength: 0,
 			}
-			if err := binary.Write(c.conn, binary.BigEndian, or); err != nil {
+			if err := Write(c.conn, or); err != nil {
 				return errors.New("Cannot send list ack")
 			}
 		case NBD_OPT_STARTTLS:
@@ -1002,7 +1004,7 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 				if c.tlsConn != nil { // TLS is already negotiated
 					or.NbdOptReplyType = NBD_REP_ERR_INVALID
 				}
-				if err := binary.Write(c.conn, binary.BigEndian, or); err != nil {
+				if err := Write(c.conn, or); err != nil {
 					return errors.New("Cannot reply to unsupported TLS option")
 				}
 			} else {
@@ -1012,7 +1014,7 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 					NbdOptReplyType:   NBD_REP_ACK,
 					NbdOptReplyLength: 0,
 				}
-				if err := binary.Write(c.conn, binary.BigEndian, or); err != nil {
+				if err := Write(c.conn, or); err != nil {
 					return errors.New("Cannot send TLS ack")
 				}
 				c.logger.Printf("[INFO] Upgrading connection with %s to TLS", c.name)
@@ -1032,7 +1034,7 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 				NbdOptReplyType:   NBD_REP_ACK,
 				NbdOptReplyLength: 0,
 			}
-			if err := binary.Write(c.conn, binary.BigEndian, or); err != nil {
+			if err := Write(c.conn, or); err != nil {
 				return errors.New("Cannot send abort ack")
 			}
 			return errors.New("Connection aborted by client")
@@ -1048,7 +1050,7 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 				NbdOptReplyType:   NBD_REP_ERR_UNSUP,
 				NbdOptReplyLength: 0,
 			}
-			if err := binary.Write(c.conn, binary.BigEndian, or); err != nil {
+			if err := Write(c.conn, or); err != nil {
 				return errors.New("Cannot reply to unsupported option")
 			}
 		}
@@ -1090,68 +1092,68 @@ func (c *Connection) connectExport(ctx context.Context, ec *ExportConfig) (*Expo
 	if err != nil {
 		return nil, err
 	}
-	if backendgen, ok := BackendMap[strings.ToLower(ec.Driver)]; !ok {
+	backendgen, ok := BackendMap[strings.ToLower(ec.Driver)]
+	if !ok {
 		return nil, fmt.Errorf("No such driver %s", ec.Driver)
-	} else {
-		if backend, err := backendgen(ctx, ec); err != nil {
-			return nil, err
-		} else {
-			size, minimumBlockSize, preferredBlockSize, maximumBlockSize, err := backend.Geometry(ctx)
-			if err != nil {
-				backend.Close(ctx)
-				return nil, err
-			}
-			if c.backend != nil {
-				c.backend.Close(ctx)
-			}
-			c.backend = backend
-			if ec.MinimumBlockSize != 0 {
-				minimumBlockSize = ec.MinimumBlockSize
-			}
-			if ec.PreferredBlockSize != 0 {
-				preferredBlockSize = ec.PreferredBlockSize
-			}
-			if ec.MaximumBlockSize != 0 {
-				maximumBlockSize = ec.MaximumBlockSize
-			}
-			if minimumBlockSize == 0 {
-				minimumBlockSize = 1
-			}
-			minimumBlockSize = roundUpToNextPowerOfTwo(minimumBlockSize)
-			preferredBlockSize = roundUpToNextPowerOfTwo(preferredBlockSize)
-			// ensure preferredBlockSize is a multiple of the minimum block size
-			preferredBlockSize = preferredBlockSize & ^(minimumBlockSize - 1)
-			if preferredBlockSize < minimumBlockSize {
-				preferredBlockSize = minimumBlockSize
-			}
-			// ensure maximumBlockSize is a multiple of preferredBlockSize
-			maximumBlockSize = maximumBlockSize & ^(preferredBlockSize - 1)
-			if maximumBlockSize < preferredBlockSize {
-				maximumBlockSize = preferredBlockSize
-			}
-			flags := uint16(NBD_FLAG_HAS_FLAGS | NBD_FLAG_SEND_WRITE_ZEROES | NBD_FLAG_SEND_CLOSE)
-			if (backend.HasFua(ctx) || forceFua) && !forceNoFua {
-				flags |= NBD_FLAG_SEND_FUA
-			}
-			if (backend.HasFlush(ctx) || forceFlush) && !forceNoFlush {
-				flags |= NBD_FLAG_SEND_FLUSH
-			}
-			size = size & ^(minimumBlockSize - 1)
-			return &Export{
-				size:               size,
-				exportFlags:        flags,
-				name:               ec.Name,
-				readonly:           ec.ReadOnly,
-				workers:            ec.Workers,
-				tlsonly:            ec.TlsOnly,
-				description:        ec.Description,
-				minimumBlockSize:   minimumBlockSize,
-				preferredBlockSize: preferredBlockSize,
-				maximumBlockSize:   maximumBlockSize,
-				memoryBlockSize:    preferredBlockSize,
-			}, nil
-		}
 	}
+	backend, err := backendgen(ctx, ec)
+	if err != nil {
+		return nil, err
+	}
+	size, minimumBlockSize, preferredBlockSize, maximumBlockSize, err := backend.Geometry(ctx)
+	if err != nil {
+		backend.Close(ctx)
+		return nil, err
+	}
+	if c.backend != nil {
+		c.backend.Close(ctx)
+	}
+	c.backend = backend
+	if ec.MinimumBlockSize != 0 {
+		minimumBlockSize = ec.MinimumBlockSize
+	}
+	if ec.PreferredBlockSize != 0 {
+		preferredBlockSize = ec.PreferredBlockSize
+	}
+	if ec.MaximumBlockSize != 0 {
+		maximumBlockSize = ec.MaximumBlockSize
+	}
+	if minimumBlockSize == 0 {
+		minimumBlockSize = 1
+	}
+	minimumBlockSize = roundUpToNextPowerOfTwo(minimumBlockSize)
+	preferredBlockSize = roundUpToNextPowerOfTwo(preferredBlockSize)
+	// ensure preferredBlockSize is a multiple of the minimum block size
+	preferredBlockSize = preferredBlockSize & ^(minimumBlockSize - 1)
+	if preferredBlockSize < minimumBlockSize {
+		preferredBlockSize = minimumBlockSize
+	}
+	// ensure maximumBlockSize is a multiple of preferredBlockSize
+	maximumBlockSize = maximumBlockSize & ^(preferredBlockSize - 1)
+	if maximumBlockSize < preferredBlockSize {
+		maximumBlockSize = preferredBlockSize
+	}
+	flags := NBD_FLAG_HAS_FLAGS | NBD_FLAG_SEND_WRITE_ZEROES | NBD_FLAG_SEND_CLOSE
+	if (backend.HasFua(ctx) || forceFua) && !forceNoFua {
+		flags |= NBD_FLAG_SEND_FUA
+	}
+	if (backend.HasFlush(ctx) || forceFlush) && !forceNoFlush {
+		flags |= NBD_FLAG_SEND_FLUSH
+	}
+	size = size & ^(minimumBlockSize - 1)
+	return &Export{
+		size:               size,
+		exportFlags:        flags,
+		name:               ec.Name,
+		readonly:           ec.ReadOnly,
+		workers:            ec.Workers,
+		tlsonly:            ec.TlsOnly,
+		description:        ec.Description,
+		minimumBlockSize:   minimumBlockSize,
+		preferredBlockSize: preferredBlockSize,
+		maximumBlockSize:   maximumBlockSize,
+		memoryBlockSize:    preferredBlockSize,
+	}, nil
 }
 
 func RegisterBackend(name string, generator func(ctx context.Context, e *ExportConfig) (Backend, error)) {
@@ -1161,7 +1163,7 @@ func RegisterBackend(name string, generator func(ctx context.Context, e *ExportC
 func GetBackendNames() []string {
 	b := make([]string, len(BackendMap))
 	i := 0
-	for k, _ := range BackendMap {
+	for k := range BackendMap {
 		b[i] = k
 		i++
 	}

@@ -1,3 +1,4 @@
+//go:build linux && !noaio
 // +build linux,!noaio
 
 // The above build tag specifies this file is only to be built on linux (because

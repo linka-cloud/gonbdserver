@@ -1,5 +1,10 @@
 package nbd
 
+import (
+	"encoding/binary"
+	"io"
+)
+
 /* --- START OF NBD PROTOCOL SECTION --- */
 
 // this section is in essence a transcription of the protocol from
@@ -132,9 +137,27 @@ type nbdNewStyleHeader struct {
 	NbdGlobalFlags uint16
 }
 
+func (h *nbdNewStyleHeader) Write(writer io.Writer) error {
+	buff := make([]byte, 18)
+	binary.BigEndian.PutUint64(buff[:8], h.NbdMagic)
+	binary.BigEndian.PutUint64(buff[8:16], h.NbdOptsMagic)
+	binary.BigEndian.PutUint16(buff[16:18], h.NbdGlobalFlags)
+	_, err := writer.Write(buff)
+	return err
+}
+
 // NBD client flags
 type nbdClientFlags struct {
 	NbdClientFlags uint32
+}
+
+func (f *nbdClientFlags) Read(reader io.Reader) error {
+	buff := make([]byte, 4)
+	if _, err := io.ReadFull(reader, buff); err != nil {
+		return err
+	}
+	f.NbdClientFlags = binary.BigEndian.Uint32(buff)
+	return nil
 }
 
 // NBD client options
@@ -144,10 +167,38 @@ type nbdClientOpt struct {
 	NbdOptLen   uint32
 }
 
+func (o *nbdClientOpt) Read(reader io.Reader) error {
+	buff := make([]byte, 16)
+	if _, err := io.ReadFull(reader, buff); err != nil {
+		return err
+	}
+	o.NbdOptMagic = binary.BigEndian.Uint64(buff[:8])
+	o.NbdOptId = binary.BigEndian.Uint32(buff[8:12])
+	o.NbdOptLen = binary.BigEndian.Uint32(buff[12:16])
+	return nil
+}
+
+func (o *nbdClientOpt) Write(writer io.Writer) error {
+	buff := make([]byte, 16)
+	binary.BigEndian.PutUint64(buff[:8], o.NbdOptMagic)
+	binary.BigEndian.PutUint32(buff[8:12], o.NbdOptId)
+	binary.BigEndian.PutUint32(buff[12:16], o.NbdOptLen)
+	_, err := writer.Write(buff)
+	return err
+}
+
 // NBD export details
 type nbdExportDetails struct {
 	NbdExportSize  uint64
 	NbdExportFlags uint16
+}
+
+func (e *nbdExportDetails) Write(writer io.Writer) error {
+	buff := make([]byte, 10)
+	binary.BigEndian.PutUint64(buff[:8], e.NbdExportSize)
+	binary.BigEndian.PutUint16(buff[8:10], e.NbdExportFlags)
+	_, err := writer.Write(buff)
+	return err
 }
 
 // NBD option reply
@@ -156,6 +207,16 @@ type nbdOptReply struct {
 	NbdOptId          uint32
 	NbdOptReplyType   uint32
 	NbdOptReplyLength uint32
+}
+
+func (r *nbdOptReply) Write(writer io.Writer) error {
+	buff := make([]byte, 20)
+	binary.BigEndian.PutUint64(buff[:8], r.NbdOptReplyMagic)
+	binary.BigEndian.PutUint32(buff[8:12], r.NbdOptId)
+	binary.BigEndian.PutUint32(buff[12:16], r.NbdOptReplyType)
+	binary.BigEndian.PutUint32(buff[16:20], r.NbdOptReplyLength)
+	_, err := writer.Write(buff)
+	return err
 }
 
 // NBD request
@@ -168,11 +229,34 @@ type nbdRequest struct {
 	NbdLength       uint32
 }
 
+func (r *nbdRequest) Read(reader io.Reader) error {
+	buff := make([]byte, 28)
+	if _, err := io.ReadFull(reader, buff); err != nil {
+		return err
+	}
+	r.NbdRequestMagic = binary.BigEndian.Uint32(buff[:4])
+	r.NbdCommandFlags = binary.BigEndian.Uint16(buff[4:6])
+	r.NbdCommandType = binary.BigEndian.Uint16(buff[6:8])
+	r.NbdHandle = binary.BigEndian.Uint64(buff[8:16])
+	r.NbdOffset = binary.BigEndian.Uint64(buff[16:24])
+	r.NbdLength = binary.BigEndian.Uint32(buff[24:28])
+	return nil
+}
+
 // NBD simple reply
 type nbdReply struct {
 	NbdReplyMagic uint32
 	NbdError      uint32
 	NbdHandle     uint64
+}
+
+func (r *nbdReply) Write(writer io.Writer) error {
+	buff := make([]byte, 16)
+	binary.BigEndian.PutUint32(buff[:4], r.NbdReplyMagic)
+	binary.BigEndian.PutUint32(buff[4:8], r.NbdError)
+	binary.BigEndian.PutUint64(buff[8:16], r.NbdHandle)
+	_, err := writer.Write(buff)
+	return err
 }
 
 // NBD info export
@@ -182,12 +266,31 @@ type nbdInfoExport struct {
 	NbdTransmissionFlags uint16
 }
 
+func (e *nbdInfoExport) Write(writer io.Writer) error {
+	buff := make([]byte, 12)
+	binary.BigEndian.PutUint16(buff[:2], e.NbdInfoType)
+	binary.BigEndian.PutUint64(buff[2:10], e.NbdExportSize)
+	binary.BigEndian.PutUint16(buff[10:12], e.NbdTransmissionFlags)
+	_, err := writer.Write(buff)
+	return err
+}
+
 // NBD info blocksize
 type nbdInfoBlockSize struct {
 	NbdInfoType           uint16
 	NbdMinimumBlockSize   uint32
 	NbdPreferredBlockSize uint32
 	NbdMaximumBlockSize   uint32
+}
+
+func (i *nbdInfoBlockSize) Write(writer io.Writer) error {
+	buff := make([]byte, 14)
+	binary.BigEndian.PutUint16(buff[:2], i.NbdInfoType)
+	binary.BigEndian.PutUint32(buff[2:6], i.NbdMinimumBlockSize)
+	binary.BigEndian.PutUint32(buff[6:10], i.NbdPreferredBlockSize)
+	binary.BigEndian.PutUint32(buff[10:14], i.NbdMaximumBlockSize)
+	_, err := writer.Write(buff)
+	return err
 }
 
 /* --- END OF NBD PROTOCOL SECTION --- */
@@ -211,4 +314,30 @@ var CmdTypeMap = map[int]uint64{
 	NBD_CMD_TRIM:         CMDT_CHECK_LENGTH_OFFSET | CMDT_CHECK_NOT_READ_ONLY,
 	NBD_CMD_WRITE_ZEROES: CMDT_CHECK_LENGTH_OFFSET | CMDT_CHECK_NOT_READ_ONLY | CMDT_REQ_FAKE_PAYLOAD,
 	NBD_CMD_CLOSE:        CMDT_SET_DISCONNECT_RECEIVED,
+}
+
+type Reader interface {
+	Read(r io.Reader) error
+}
+
+func Read(r io.Reader, data interface{}) error {
+	switch d := data.(type) {
+	case Reader:
+		return d.Read(r)
+	default:
+		return binary.Read(r, binary.BigEndian, data)
+	}
+}
+
+type Writer interface {
+	Write(w io.Writer) error
+}
+
+func Write(w io.Writer, data interface{}) error {
+	switch d := data.(type) {
+	case Writer:
+		return d.Write(w)
+	default:
+		return binary.Write(w, binary.BigEndian, data)
+	}
 }
