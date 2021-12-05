@@ -1,7 +1,5 @@
 package nbd
 
-import ()
-
 /* --- START OF NBD PROTOCOL SECTION --- */
 
 // this section is in essence a transcription of the protocol from

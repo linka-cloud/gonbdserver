@@ -7,13 +7,14 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
-	"github.com/mattn/go-isatty"
 	"io"
 	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/mattn/go-isatty"
 )
 
 const (

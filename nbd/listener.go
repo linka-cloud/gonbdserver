@@ -1,11 +1,11 @@
 package nbd
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"golang.org/x/net/context"
 	"io/ioutil"
 	"log"
 	"net"

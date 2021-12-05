@@ -9,10 +9,11 @@
 package nbd
 
 import (
+	"context"
 	"fmt"
+
 	"github.com/ceph/go-ceph/rados"
 	"github.com/ceph/go-ceph/rbd"
-	"golang.org/x/net/context"
 )
 
 // RbdBackend implements Backend

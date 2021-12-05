@@ -2,7 +2,8 @@ package main
 
 import (
 	"flag"
-	"github.com/abligh/gonbdserver/nbd"
+
+	"go.linka.cloud/gonbdserver/nbd"
 )
 
 // main() is the main program entry

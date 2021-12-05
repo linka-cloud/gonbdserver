@@ -1,11 +1,9 @@
 package nbd
 
 import (
+	"context"
 	"flag"
 	"fmt"
-	"github.com/sevlyar/go-daemon"
-	"golang.org/x/net/context"
-	"gopkg.in/yaml.v2"
 	"io"
 	"io/ioutil"
 	"log"
@@ -22,6 +20,9 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+
+	"github.com/sevlyar/go-daemon"
+	"gopkg.in/yaml.v2"
 )
 
 /* Example configuration:

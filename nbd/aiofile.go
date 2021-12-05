@@ -8,9 +8,10 @@
 package nbd
 
 import (
-	"github.com/traetox/goaio"
-	"golang.org/x/net/context"
+	"context"
 	"os"
+
+	"github.com/traetox/goaio"
 )
 
 // AioFileBackend implements Backend
